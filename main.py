@@ -1,56 +1,65 @@
-import argparse, time
+import argparse
+import time
 import gymnasium as gym
+from envs.sumo_env import SumoEnv  # ensures SUMO env is imported and registered
 
-# Import runner, trainers, and parameters classes here
 from runner.runner import ALGOrunner
 from train.ppo_trainer import PPOtrainer
 from train.dqn_trainer import DQNtrainer
 from train.a2c_trainer import A2Ctrainer
 from util.parameters import ParametersPPO, ParametersDQN, ParametersA2C
 
+
 def main():
-    parser  = argparse.ArgumentParser(description = "Run different variations of algorithms and environments.")
-    parser.add_argument('--env', type=str, required=True, help='The environment to run. Choose from "pong", or "cartpole".')
-    parser.add_argument('--algo', type=str, required=True, help='The algorithm to use. Choose from "dqn", "ppo", or "a2c".')
+    parser = argparse.ArgumentParser(
+        description="Run different variations of algorithms and environments.")
+    parser.add_argument('--env', type=str, required=True,
+                        help='Choose: "cartpole", "pong", or "sumo".')
+    parser.add_argument('--algo', type=str, required=True,
+                        help='Choose: "dqn", "ppo", or "a2c".')
+    parser.add_argument('--render-freq', type=int, default=1,
+                        help='Render every N steps (default: 1 = every step)')
     args = parser.parse_args()
 
-    #create environment
-    if args.env == 'cartpole':
+    # --- Select environment ---
+    if args.env.lower() == 'cartpole':
         env_name = 'CartPole-v1'
+        
         env = gym.make(env_name)
-    elif args.env == 'pong':
-        env_name = 'PongNoFrameskip-v4'
+
+    elif args.env.lower() == 'pong':
         raise ValueError("Pong environment not implemented.")
-    else:
-        raise ValueError("Environment name incorrect or found")
 
-    #assign params and trainer classes based on algo input
-    if args.algo == 'ppo':
-        params = ParametersPPO()
-        trainer = lambda: PPOtrainer()
-    elif args.algo == 'a2c':
+    elif args.env.lower() == 'sumo':
+        env_name = 'sumo-v0'
+        env = SumoEnv(max_steps=20,render_mode='human' ,step_length=0.2,decision_steps=10) 
+    else:
+        raise ValueError(f"Unknown environment: {args.env}")
+
+    # --- Select algorithm ---
+    if args.algo.lower() == 'ppo':
+        params = ParametersPPO()    
+        trainer = PPOtrainer
+    elif args.algo.lower() == 'a2c':
         params = ParametersA2C()
-        trainer = lambda: A2Ctrainer()
-    elif args.algo == 'dqn':
+        trainer = A2Ctrainer
+    elif args.algo.lower() == 'dqn':
         params = ParametersDQN()
-        trainer = lambda: DQNtrainer()
+        trainer = DQNtrainer
     else:
-        raise ValueError("Algorithm name incorrect or not found")
+        raise ValueError(f"Unknown algorithm: {args.algo}")
 
-    #add environment specific parameters
+    # --- Set parameters ---
     params.env_name = env_name
     params.state_dim = env.observation_space.shape[0]
     params.action_dim = env.action_space.n
-    # TODO: add logic for discrete vs. continuous spaces?
 
-    #define runner and run experiment
+    # --- Run ---
     runner = ALGOrunner(env, trainer)
     runner.run_experiment(params)
 
 if __name__ == "__main__":
-    start_time = time.time()  # Record the start time
-    main()                    # Execute the main function
-    end_time = time.time()    # Record the end time
+    start_time = time.time()
+    main()
+    end_time = time.time()
     print(f"Execution Time: {(end_time - start_time):.2f} seconds")
-
-
