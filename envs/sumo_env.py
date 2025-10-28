@@ -450,11 +450,11 @@ class SumoEnv(gym.Env):
             
             # Route completion bonus
             if route_completed and not collision_occurred:
-                reward += 5.0
+                reward = 5.0
             
             # Lane change penalty
             if lane_changed:
-                reward -= 1.0
+                reward = -1.0
             
             # Efficiency reward based on speed
             v_min = 0.0
