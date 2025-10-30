@@ -32,7 +32,7 @@ def main():
 
     elif args.env.lower() == 'sumo':
         env_name = 'sumo-v0'
-        env = SumoEnv(max_steps=20,render_mode='human' ,step_length=0.2,decision_steps=10) 
+        env = SumoEnv(max_steps=40,v_max=30,render_mode='human',step_length=0.2,decision_steps=5) 
     else:
         raise ValueError(f"Unknown environment: {args.env}")
 
