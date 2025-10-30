@@ -11,8 +11,8 @@ import random
 
 class SumoEnv(gym.Env):
     """SUMO-based Highway Lane Change Environment"""  
-    def __init__(self, gui=False, step_length=0.1, L1=20, L2=50, 
-                 v_max=16.7, max_steps=100, w_efficiency=1.0, w_safety=1.0,
+    def __init__(self, gui=False, step_length=0.2, L1=20, L2=50,
+                 v_max=30, max_steps=40, w_efficiency=1.0, w_safety=1.0,
                  road_type='highway', decision_steps=10, render_mode=None, delta_t=1.0, tau=3.0, 
                  safe_distance=5.0, route_distance=500, **kwargs):
         super().__init__()
@@ -431,22 +431,14 @@ class SumoEnv(gym.Env):
             self.previous_lane = current_lane
             
             # Check route completion
-            route_completed = False
-            try:
-                current_pos = self.conn.vehicle.getLanePosition(self.ego_id)
-                distance_traveled = current_pos - self.ego_start_position
-                
-                if distance_traveled >= self.route_distance:
-                    route_completed = True
-            except:
-                pass
+            route_completed = self._check_route_end()
             
             # Calculate reward components
             reward = 0.0
             
             # Collision penalty
             if collision_occurred:
-                reward = -5.0
+                reward -= 5.0
             
             # Route completion bonus
             if route_completed and not collision_occurred:
@@ -500,16 +492,10 @@ class SumoEnv(gym.Env):
 
     def _check_route_end(self):
         """Check route completion - vehicle has traveled required distance"""
-        try:
-            current_pos = self.conn.vehicle.getLanePosition(self.ego_id)
-            distance_traveled = current_pos - self.ego_start_position
-            
-            if distance_traveled >= self.route_distance:
-                return True
-        except traci.TraCIException:
-            pass
-
-        return False
+        if self.steps >= self.max_simulation_steps:
+            return True
+        else:
+            return False
 
     def _read_network_config(self):
         """Read network configuration - FIXED to read actual network values"""
