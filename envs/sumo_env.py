@@ -11,8 +11,8 @@ import random
 
 class SumoEnv(gym.Env):
     """SUMO-based Highway Lane Change Environment"""  
-    def __init__(self, gui=False, step_length=0.2, L1=20, L2=50,
-                 v_max=30, max_steps=40, w_efficiency=1.0, w_safety=1.0,
+    def __init__(self, gui=False, step_length=0.1, L1=20, L2=50, 
+                 v_max=16.7, max_steps=100, w_efficiency=1.0, w_safety=1.0,
                  road_type='highway', decision_steps=10, render_mode=None, delta_t=1.0, tau=3.0, 
                  safe_distance=5.0, route_distance=500, **kwargs):
         super().__init__()
@@ -32,7 +32,14 @@ class SumoEnv(gym.Env):
         self.decision_steps = decision_steps
         self.max_simulation_steps = self.max_decision_steps * self.decision_steps
         self.safe_distance = safe_distance
-        self.route_distance = route_distance  # Required distance to travel          
+        
+        # Statistical Metrics
+        self.collision_counter= 0  # For collision checks
+        self.route_end_counter = 0 # For route end check
+        self.episode_count = 0     # For episode averaging
+        self.total_speed_sum = 0.0
+        self.total_speed_samples = 0
+        self.total_distance = 0.0
         
         # File paths
         base_dir = kwargs.get('base_dir', os.path.dirname(__file__))
@@ -46,9 +53,8 @@ class SumoEnv(gym.Env):
         
         # Vehicle and simulation state
         self.ego_id = "ego"
-        self.ego_start_position = 0.0  # Track starting position for 1000m check
         self.sumo_running = False
-        self.base_label = f"sumo_{id(self)}"
+        self.base_label = f"sumo_{id(self)}"          
         self.label = self.base_label 
         self.steps = 0
         self.decision_step_count = 0
@@ -103,12 +109,14 @@ class SumoEnv(gym.Env):
         """Reset environment"""
         super().reset(seed=seed)
         
+
         # Stop previous simulation
         if self.sumo_running:
             try:
                 traci.close()
             except:
                 pass
+
             self.sumo_running = False
             time.sleep(0.5)
         
@@ -124,6 +132,7 @@ class SumoEnv(gym.Env):
         
         # Reset tracking variables
         self.steps = 0
+        self.average_counter = []
         self.decision_step_count = 0
         self.last_action = None
         self.last_reward = 0.0
@@ -134,6 +143,9 @@ class SumoEnv(gym.Env):
         self.termination_reason = None
         self.min_traffic = random.randint(1, 5)
         self.max_traffic = random.randint(10, 15)
+        self.episode_speed_sum = 0.0
+        self.episode_speed_count = 0
+        self.episode_start_position = None
 
         # Spawn initial vehicles
         target_vehicles = random.randint(10, 20)
@@ -150,21 +162,17 @@ class SumoEnv(gym.Env):
             return self.reset(seed, options)
             
         self.ego_id = np.random.choice(all_vehicles)
-        
-        # Store starting position for 1000m distance check
-        try:
-            self.ego_start_position = self.conn.vehicle.getLanePosition(self.ego_id)
-        except traci.TraCIException:
-            return self.reset(seed, options)
-        
+                
         # Configure ego vehicle control
         try:
             self.conn.vehicle.setSpeedMode(self.ego_id, 0)
             self.conn.vehicle.setLaneChangeMode(self.ego_id, 0)
             self.previous_lane = self.conn.vehicle.getLaneIndex(self.ego_id)
+            self.episode_start_position = self.conn.vehicle.getLanePosition(self.ego_id)
         except traci.TraCIException:
             return self.reset(seed, options)
             
+        
         initial_state = self._get_observation()
         
         return initial_state, {}
@@ -180,6 +188,7 @@ class SumoEnv(gym.Env):
         try:
             current_speed = self.conn.vehicle.getSpeed(self.ego_id)
             current_lane = self.conn.vehicle.getLaneIndex(self.ego_id)
+
         except traci.TraCIException:
             self.termination_reason = "TRACI ERROR"
             return self._get_observation(), 0.0, True, False, {'traci_error': True}
@@ -203,54 +212,75 @@ class SumoEnv(gym.Env):
                 self.conn.vehicle.changeLane(self.ego_id, current_lane + 1, self.tau)
         
         # Advance simulation
-        for _ in range(self.decision_steps):
-            if self.steps >= self.max_simulation_steps:
-                truncated = True
-                break
-                
+        for _ in range(self.decision_steps):               
             self._manage_traffic()
             self.conn.simulationStep()
             self.steps += 1
-                
+
+            try:
+                current_step_speed = self.conn.vehicle.getSpeed(self.ego_id)
+                self.episode_speed_sum += current_step_speed
+                self.episode_speed_count += 1
+            except traci.TraCIException:
+                pass
+
+            # Terminal Conditions
+            if self.steps >= self.max_simulation_steps:
+                self.route_end = True
+
+            self._check_collision()
+
             step_reward = self._compute_reward()
             total_reward += step_reward
-            
-            self._check_collision()
-            self.route_end = self._check_route_end()
             
             # Set termination reasons
             if self.collision_occurred:
                 self.termination_reason = "COLLISION"
+                self.collision_counter += 1
+                self._update_episode_metrics()
+            
             elif self.route_end:
                 self.termination_reason = "ROUTE COMPLETED"
+                self.route_end_counter += 1
+                self._update_episode_metrics()
             
             if self.render_mode == 'human':
                 self.render()
-            
+                    
             if self.collision_occurred or self.route_end:
                 break
-        
+
         # Prepare return values
         next_state = self._get_observation()
         
         self.decision_step_count += 1
-        
-        decision_time_limit = (self.decision_step_count >= self.max_decision_steps)
-        
-        truncated = truncated or decision_time_limit
-        
-        # Set termination reasons for time limits
-        if truncated:
-            if self.steps >= self.max_simulation_steps:
-                self.termination_reason = "SIMULATION TIME LIMIT"
-            elif decision_time_limit:
-                self.termination_reason = "DECISION TIME LIMIT"
-        
+                        
         done = self.collision_occurred or self.route_end
-        
+
+        if self.episode_count % 10 == 0 and done:
+            collision_rate = self.collision_counter / self.episode_count
+            route_end_rate = self.route_end_counter / self.episode_count
+            avg_speed = self.total_speed_sum / self.total_speed_samples if self.total_speed_samples > 0 else 0.0
+            avg_distance = self.total_distance / self.episode_count if self.episode_count > 0 else 0.0
+            print(f"Collision Rate: {collision_rate:.3f} | Route End Rate: {route_end_rate:.3f} | Avg Speed: {avg_speed:.2f} m/s ({avg_speed*3.6:.2f} km/h) | Avg Distance: {avg_distance:.2f} m")
+            
         self.last_reward = total_reward
         
         return next_state, total_reward, done, truncated, {'collision': self.collision_occurred}
+
+    def _update_episode_metrics(self):
+        """Update cumulative metrics at episode end"""
+        try:
+            if self.episode_speed_count > 0:
+                self.total_speed_sum += self.episode_speed_sum
+                self.total_speed_samples += self.episode_speed_count
+            
+            if self.episode_start_position is not None:
+                current_position = self.conn.vehicle.getLanePosition(self.ego_id)
+                episode_distance = abs(current_position - self.episode_start_position)
+                self.total_distance += episode_distance
+        except traci.TraCIException:
+            pass
 
     def _get_observation(self):
         """Construct observation vector"""
@@ -265,6 +295,7 @@ class SumoEnv(gym.Env):
             ego_x, ego_y = self.conn.vehicle.getPosition(self.ego_id)
             ego_speed = self.conn.vehicle.getSpeed(self.ego_id)
             ego_angle = np.radians(self.conn.vehicle.getAngle(self.ego_id))
+
         except traci.TraCIException:
             return np.zeros(20, dtype=np.float32)
             
@@ -355,7 +386,7 @@ class SumoEnv(gym.Env):
         safe_spawn_clearance = 15
         
         # Spawn new vehicles
-        for i in range(demand):
+        for _ in range(demand):
             max_spawn_attempts = 10
             
             for _ in range(max_spawn_attempts):
@@ -370,9 +401,9 @@ class SumoEnv(gym.Env):
                 
                 spawn_lane = random.randint(0, self.num_lanes - 1)
                 
-                # Validate spawn position - FIXED: Use actual edge length from network
+                # Validate spawn position 
                 if not (100 < spawn_position < self.edge_length - 100):
-                    continue
+                    continue 
                 
                 # Check safety clearance
                 position_is_safe = True
@@ -429,19 +460,16 @@ class SumoEnv(gym.Env):
                 lane_changed = True
             
             self.previous_lane = current_lane
-            
-            # Check route completion
-            route_completed = self._check_route_end()
-            
+                        
             # Calculate reward components
             reward = 0.0
             
             # Collision penalty
             if collision_occurred:
-                reward -= 5.0
+                reward = -5.0
             
             # Route completion bonus
-            if route_completed and not collision_occurred:
+            if self.route_end and not collision_occurred:
                 reward += 5.0
             
             # Lane change penalty
@@ -489,13 +517,6 @@ class SumoEnv(gym.Env):
             
         except traci.TraCIException:
             pass
-
-    def _check_route_end(self):
-        """Check route completion - vehicle has traveled required distance"""
-        if self.steps >= self.max_simulation_steps:
-            return True
-        else:
-            return False
 
     def _read_network_config(self):
         """Read network configuration - FIXED to read actual network values"""
@@ -804,14 +825,8 @@ class SumoEnv(gym.Env):
                 title = self.font_large.render("COLLISION", True, (255, 0, 0))
             elif self.termination_reason == "ROUTE COMPLETED":
                 title = self.font_large.render("ROUTE COMPLETED", True, (0, 255, 0))
-            elif self.termination_reason == "SIMULATION TIME LIMIT":
-                title = self.font_large.render("SIMULATION TIME LIMIT", True, (255, 165, 0))
-            elif self.termination_reason == "DECISION TIME LIMIT":
-                title = self.font_large.render("DECISION TIME LIMIT", True, (255, 215, 0))
             elif self.termination_reason == "TRACI ERROR":
                 title = self.font_large.render("TRACI ERROR", True, (255, 0, 255))
-            elif self.collision_occurred:
-                title = self.font_large.render("COLLISION", True, (255, 0, 0))
             else:
                 title = self.font_large.render("SUMO Highway Environment", True, (255, 255, 255))
             self.screen.blit(title, (20, 10))
@@ -821,7 +836,7 @@ class SumoEnv(gym.Env):
                 f"Sim Step: {self.steps}/{self.max_simulation_steps}",
                 f"Speed: {ego_speed:.1f} m/s ({ego_speed * 3.6:.1f} km/h)",
                 f"Lane: {ego_lane}",
-                f"Distance: {(ego_pos - self.ego_start_position):.0f}m/{self.route_distance}m",
+                f"Position: {ego_pos:.0f}m",
                 f"Vehicles: {len(all_vehicles)} (Rendered: {vehicles_drawn})",
                 f"Reward: {self.last_reward:.3f}"
             ]
