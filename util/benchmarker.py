@@ -9,7 +9,7 @@ class Utils:
     def __init__(self):
         pass
 
-    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, moving_avg_window=100, down_sample_factor=100):
+    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, all_tests_info, test_episodes, moving_avg_window=100, down_sample_factor=100):
         """Data processing and calculations"""
         num_trials = len(all_train_returns)
         num_points = len(all_test_returns[0])
@@ -58,6 +58,41 @@ class Utils:
         plt.ylabel('Test Return')
         plt.title('Test Returns with 95% Confidence Interval')
         plt.legend()
+        plt.show()
+
+        """ Plot Information Table """
+        # Create per-trial summary data from LAST test checkpoint only
+        data = []
+        for trial_idx in range(num_trials):
+            # Get only the last test_episodes worth of info (final test checkpoint)
+            trial_tests = all_tests_info[trial_idx][-test_episodes:]
+            
+            num_tests = len(trial_tests)
+            collisions = sum(1 for test in trial_tests if test.get('collision', False))
+            avg_speed_ms = np.mean([test.get('average_speed_m_s', 0) for test in trial_tests])
+            avg_distance = np.mean([test.get('distance_travelled_m', 0) for test in trial_tests])
+            
+            data.append([
+                num_tests,
+                collisions,
+                f"{avg_speed_ms:.2f}",
+                f"{avg_distance:.1f}"
+            ])
+
+        columns = ['Tests', 'Collisions', 'Speed (m/s)', 'Distance (m)']
+        rows = [f'Trial {i+1}' for i in range(num_trials)]
+
+        fig, ax = plt.subplots(figsize=(10, max(3, num_trials * 0.5)))
+        ax.axis('tight')
+        ax.axis('off')
+
+        table = ax.table(cellText=data, colLabels=columns, rowLabels=rows,
+                         cellLoc='center', loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 2)
+
+        plt.title('Final Test Performance (Last Checkpoint)', fontsize=12, pad=20)
         plt.show()
 
         # Plot density plot of test returns

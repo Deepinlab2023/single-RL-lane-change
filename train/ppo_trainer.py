@@ -8,6 +8,7 @@ from torch.distributions import Categorical
 from agent.ppo import PPOActor, PPOCritic
 from helpers.ppo_helper import BatchProcessing, compute_GAE, pre_process
 
+
 class PPOtrainer:
     def __init__(self):
         pass
@@ -21,6 +22,7 @@ class PPOtrainer:
 
         episode_rewards = []
         test_rewards = []
+        tests_info = []
 
         n_ep = 0
 
@@ -40,16 +42,16 @@ class PPOtrainer:
                 for t in range(params.t_max):
                     state = pre_process(obs).to(device)
 
-                    #select action, compute value estimate
+                    # select action, compute value estimate
                     with th.no_grad():
                         logits = actor(state)
                         action, logp, _ = actor.select_action(logits)
                         value = critic(state)
 
-                    #take a step
+                    # take a step
                     next_obs, reward, terminated, truncated, _ = env.step(action.item())
 
-                    #store transition
+                    # store transition
                     state_history.append(state)
                     action_history.append(action)
                     logp_history.append(logp)
@@ -59,14 +61,14 @@ class PPOtrainer:
                     total_reward += reward
                     obs = next_obs
 
-                    #logic for episode termination/truncation
-                    if truncated:   #Compute next value if episode env timelimit is reached
+                    # logic for episode termination/truncation
+                    if truncated:  # Compute next value if episode env timelimit is reached
                         next_state = pre_process(obs).to(device)
                         with th.no_grad():
                             next_value = critic(next_state)
                         value_history.append(next_value)
                         break
-                    if terminated: #Compute next value = 0 if terminal state reached
+                    if terminated:  # Compute next value = 0 if terminal state reached
                         next_value = th.zeros_like(value)
                         value_history.append(next_value)
                         break
@@ -74,28 +76,31 @@ class PPOtrainer:
                 episode_rewards.append(total_reward)
                 n_ep += 1
 
-                #compute returns and advantages for episode, add episode to buffer
-                returns, advantages = compute_GAE(reward_history, value_history, params.gamma, params.gae_lambda, device)
+                # compute returns and advantages for episode, add episode to buffer
+                returns, advantages = compute_GAE(reward_history, value_history, params.gamma, params.gae_lambda,
+                                                  device)
                 buffer.append((state_history, action_history, logp_history, value_history, returns, advantages))
 
-                #test at interval and print result
+                # test at interval and print result
                 if n_ep % params.test_interval == 0:
-                    test_reward = self.test(deepcopy(actor), params)
+                    test_reward, test_info = self.test(deepcopy(actor), params)
                     test_rewards.append(test_reward)
+                    tests_info.append(test_info)
                     print(f'Test reward at episode {n_ep}: {test_reward:.2f} '
-                          f'(train reward: {total_reward:.2f})')
+                          f'(train reward: {total_reward:.2f}) '
+                          f'(dist: {test_info[0]:.2f}, speed: {test_info[1]:.2f}, collision: {test_info[2]:.2f}%)')
 
-            #process buffer once full
+            # process buffer once full
             batch_process = BatchProcessing()
             batch_states, batch_actions, batch_logp, batch_values, batch_returns, batch_advantages \
                 = batch_process.collate_batch(buffer, params.device)
 
-            #convert to dataset and initialize dataloader for mini_batch sampling
+            # convert to dataset and initialize dataloader for mini_batch sampling
             dataset = th.utils.data.TensorDataset(batch_states, batch_actions, batch_logp, batch_values, batch_returns,
                                                   batch_advantages)
             dataloader = th.utils.data.DataLoader(dataset, batch_size=params.mini_batch_size, shuffle=True)
 
-            #optimization loop
+            # optimization loop
             for _ in range(params.opt_epochs):
                 for batch in dataloader:
                     states_mb, actions_mb, logp_mb, values_mb, returns_mb, advantages_mb = batch
@@ -125,7 +130,7 @@ class PPOtrainer:
                     actor_opt.step()
 
         print("Trial done")
-        return episode_rewards, test_rewards
+        return episode_rewards, test_rewards, tests_info
 
     @staticmethod
     def test(actor, params):
@@ -134,8 +139,10 @@ class PPOtrainer:
         test_env = gym.make(params.env_name)  # , render_mode="human")
 
         test_rewards = np.zeros(params.test_episodes)
+        test_info = []
 
         for i in range(params.test_episodes):
+            episode_info = []
             total_reward = 0
             obs, _ = test_env.reset()
 
@@ -143,15 +150,24 @@ class PPOtrainer:
                 state = pre_process(obs)
                 logits = actor(state)
                 action, _, _ = actor.select_action(logits)
-                next_obs, reward, done, trunc, _ = test_env.step(action.item())
+                next_obs, reward, done, trunc, info = test_env.step(action.item())
 
                 total_reward += reward
                 obs = next_obs
                 if done or trunc:
+                    episode_info = info
                     break
 
             test_rewards[i] = total_reward
+            test_info.append(episode_info)
 
         test_env.close()
+
+        # Calculate averages
+        avg_distance = np.mean([info.get('distance_travelled_m', 0) for info in test_info])
+        avg_speed = np.mean([info.get('average_speed_m_s', 0) for info in test_info])
+        collision_pct = sum('collision' in str(info.get('termination_reason', '')).lower() for info in test_info) / len(
+            test_info) * 100
+
         average_reward = np.mean(test_rewards)
-        return average_reward
+        return average_reward, (avg_distance, avg_speed, collision_pct)
