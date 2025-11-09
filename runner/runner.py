@@ -15,15 +15,17 @@ class ALGOrunner():
                 'all_test_returns.npy'):
             all_train_returns = []
             all_test_returns = []
+            all_tests_info = []
 
             for trial in range(params.num_trials):
                 print(f"Trial: {trial + 1}")
                 trainer = self.trainer()
 
-                train_rewards, test_rewards = trainer.train(self.env, params)
+                train_rewards, test_rewards, tests_info = trainer.train(self.env, params)
 
                 all_train_returns.append(train_rewards)
                 all_test_returns.append(test_rewards)
+                all_tests_info.append(tests_info)
 
             print(f"Testing Completed in {(time.time() - start):.2f} seconds")
             np.save('all_train_returns.npy', all_train_returns)
