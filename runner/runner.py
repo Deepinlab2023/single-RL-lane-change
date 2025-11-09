@@ -40,7 +40,8 @@ class ALGOrunner():
         average_returns, max_return, max_return_ci, individual_returns = utils.benchmark_plot(all_train_returns,
                                                                                               all_test_returns,
                                                                                               params.test_interval,
-                                                                                              all_tests_info)
+                                                                                              all_tests_info,
+                                                                                              params.test_episodes)
         print(f"Average Return: {np.round(average_returns, 2)}")
         print(f"Max Return: {max_return}")
         print(f"Max Return 95% CI: {max_return_ci}")
