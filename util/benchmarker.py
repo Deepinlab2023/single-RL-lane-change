@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as st
 import seaborn as sns
+import pandas as pd
 import sys
 #TODO: Fix confidence interval / benchmarking calculation
 
@@ -9,7 +10,8 @@ class Utils:
     def __init__(self):
         pass
 
-    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, all_tests_info, test_episodes, moving_avg_window=100, down_sample_factor=100):
+    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, all_tests_info, test_episodes,
+                       moving_avg_window=100, down_sample_factor=100):
         """Data processing and calculations"""
         num_trials = len(all_train_returns)
         num_points = len(all_test_returns[0])
@@ -47,6 +49,7 @@ class Utils:
         # down_sampled_mean_train_returns = smoothed_mean_train_returns[down_sampled_indices]
         # down_sampled_train_ci = smoothed_train_ci[down_sampled_indices]
 
+
         """Plot test rewards"""
         plt.figure(figsize=(12, 6))
         episodes = np.arange(0, num_points * test_interval, test_interval)
@@ -59,41 +62,84 @@ class Utils:
         plt.title('Test Returns with 95% Confidence Interval')
         plt.legend()
         plt.show()
-
+        
         """ Plot Information Table """
-        # Create per-trial summary data from LAST test checkpoint only
-        data = []
-        for trial_idx in range(num_trials):
-            # Get only the last test_episodes worth of info (final test checkpoint)
-            trial_tests = all_tests_info[trial_idx][-test_episodes:]
-            
-            num_tests = len(trial_tests)
-            collisions = sum(1 for test in trial_tests if test.get('collision', False))
-            avg_speed_ms = np.mean([test.get('average_speed_m_s', 0) for test in trial_tests])
-            avg_distance = np.mean([test.get('distance_travelled_m', 0) for test in trial_tests])
-            
-            data.append([
-                num_tests,
-                collisions,
-                f"{avg_speed_ms:.2f}",
-                f"{avg_distance:.1f}"
-            ])
+        # Extract and create summary table from all_tests_info
+        if all_tests_info is not None and len(all_tests_info) > 0:
+            # Extract metrics: all_tests_info[trial][test_idx] = (distance, speed, collision_pct)
+            all_distances = []
+            all_speeds = []
+            all_collisions = []
 
-        columns = ['Tests', 'Collisions', 'Speed (m/s)', 'Distance (m)']
-        rows = [f'Trial {i+1}' for i in range(num_trials)]
+            for trial in all_tests_info:
+                trial_distances = [info[0] for info in trial]
+                trial_speeds = [info[1] for info in trial]
+                trial_collisions = [info[2] for info in trial]
 
-        fig, ax = plt.subplots(figsize=(10, max(3, num_trials * 0.5)))
-        ax.axis('tight')
-        ax.axis('off')
+                all_distances.append(trial_distances)
+                all_speeds.append(trial_speeds)
+                all_collisions.append(trial_collisions)
 
-        table = ax.table(cellText=data, colLabels=columns, rowLabels=rows,
-                         cellLoc='center', loc='center')
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 2)
+            all_distances = np.array(all_distances)
+            all_speeds = np.array(all_speeds)
+            all_collisions = np.array(all_collisions)
 
-        plt.title('Final Test Performance (Last Checkpoint)', fontsize=12, pad=20)
-        plt.show()
+            mean_distances = all_distances.mean(axis=0)
+            mean_speeds = all_speeds.mean(axis=0)
+            mean_collisions = all_collisions.mean(axis=0)
+
+            std_distances = all_distances.std(axis=0)
+            std_speeds = all_speeds.std(axis=0)
+            std_collisions = all_collisions.std(axis=0)
+
+            # Create summary table (show every 100 episodes)
+            table_episodes = episodes[::10]  # Every 100 episodes (since test_interval=10, ::10 gives every 100)
+            table_distances = mean_distances[::10]
+            table_speeds = mean_speeds[::10]
+            table_collisions = mean_collisions[::10]
+            table_dist_std = std_distances[::10]
+            table_speed_std = std_speeds[::10]
+            table_coll_std = std_collisions[::10]
+
+            # Create DataFrame
+            summary_df = pd.DataFrame({
+                'Episode': table_episodes,
+                'Avg Distance (m)': [f"{d:.2f} ± {s:.2f}" for d, s in zip(table_distances, table_dist_std)],
+                'Avg Speed (m/s)': [f"{sp:.2f} ± {st:.2f}" for sp, st in zip(table_speeds, table_speed_std)],
+                'Avg Speed (km/h)': [f"{sp * 3.6:.2f} ± {st * 3.6:.2f}" for sp, st in
+                                     zip(table_speeds, table_speed_std)],
+                'Avg Collision (%)': [f"{c:.2f} ± {s:.2f}" for c, s in zip(table_collisions, table_coll_std)]
+            })
+
+            # Print table
+            print("\n" + "=" * 100)
+            print("AVERAGED METRICS ACROSS ALL TRIALS (Every 100 Episodes)")
+            print("=" * 100)
+            print(summary_df.to_string(index=False))
+            print("=" * 100)
+
+            # Print summary statistics
+            print("\n=== Final Metrics Summary (Episode {}) ===".format(int(episodes[-1])))
+            print(f"Average Distance: {mean_distances[-1]:.2f} ± {std_distances[-1]:.2f} m")
+            print(
+                f"Average Speed: {mean_speeds[-1]:.2f} ± {std_speeds[-1]:.2f} m/s ({mean_speeds[-1] * 3.6:.2f} ± {std_speeds[-1] * 3.6:.2f} km/h)")
+            print(f"Average Collision Rate: {mean_collisions[-1]:.2f} ± {std_collisions[-1]:.2f}%")
+
+            print("\n=== Initial Metrics Summary (Episode {}) ===".format(int(episodes[0])))
+            print(f"Average Distance: {mean_distances[0]:.2f} ± {std_distances[0]:.2f} m")
+            print(
+                f"Average Speed: {mean_speeds[0]:.2f} ± {std_speeds[0]:.2f} m/s ({mean_speeds[0] * 3.6:.2f} ± {std_speeds[0] * 3.6:.2f} km/h)")
+            print(f"Average Collision Rate: {mean_collisions[0]:.2f} ± {std_collisions[0]:.2f}%")
+
+            print("\n=== Improvement ===")
+            print(
+                f"Distance: +{mean_distances[-1] - mean_distances[0]:.2f} m ({((mean_distances[-1] - mean_distances[0]) / mean_distances[0] * 100):.1f}%)")
+            print(
+                f"Speed: +{mean_speeds[-1] - mean_speeds[0]:.2f} m/s ({((mean_speeds[-1] - mean_speeds[0]) / mean_speeds[0] * 100):.1f}%)")
+            print(
+                f"Collision Rate: {mean_collisions[-1] - mean_collisions[0]:.2f}% ({((mean_collisions[-1] - mean_collisions[0]) / mean_collisions[0] * 100):.1f}%)")
+
+
 
         # Plot density plot of test returns
         plt.figure(figsize=(12, 6))
@@ -125,5 +171,5 @@ class Utils:
         # plt.title('Density Plot of Training Returns')
         # plt.legend()
         # plt.show()
-
+        
         return mean_test_returns, avg_max_return, avg_max_return_ci, individual_max_returns
