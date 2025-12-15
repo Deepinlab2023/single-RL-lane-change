@@ -1,8 +1,9 @@
 import argparse
 import time
 import gymnasium as gym
+from gymnasium.envs.registration import register  # <--- Added Import
 from envs.sumo_env import SumoEnv
-from envs.carla_cnn_env import CarlaCNNEnv  # Only CNN version
+from envs.carla_cnn_env import CarlaCNNEnv
 
 from runner.runner import ALGOrunner
 from train.ppo_trainer import PPOtrainer
@@ -33,6 +34,8 @@ def main():
 
     elif args.env.lower() == 'sumo':
         env_name = 'sumo-v0'
+        # Sumo usually needs manual instantiation or complex registration due to the object return
+        # If your SumoEnv works with make(), register it. Otherwise, keep as is.
         env = SumoEnv(
             max_steps=40,
             v_max=25,
@@ -47,11 +50,22 @@ def main():
 
     elif args.env.lower() == 'carla':
         env_name = 'carla-cnn-v0'
-        env = CarlaCNNEnv(  # Only CNN version now
-            host='localhost',
-            port=2000,
-            num_surrounding_vehicles=30
-        )
+
+        # --- FIX: Register the environment so the Trainer can call gym.make() ---
+        # We check if it's already registered to avoid double-registration errors
+        if env_name not in gym.envs.registry:
+            register(
+                id=env_name,
+                entry_point='envs.carla_cnn_env:CarlaCNNEnv',  # Ensure this path matches your folder structure
+                kwargs={
+                    'host': 'localhost',
+                    'port': 2000,
+                    'num_surrounding_vehicles': 30
+                }
+            )
+
+        # Now create the env using gym.make so it's consistent with the trainer's logic
+        env = gym.make(env_name)
 
     else:
         raise ValueError(f"Unknown environment: {args.env}")

@@ -38,31 +38,45 @@ class ParametersDQN:
         return epsilon
 
 
+import torch as th
+import math
+
+
 class ParametersPPO:
     def __init__(self):
         self.device = th.device('cuda' if th.cuda.is_available() else 'cpu')
 
-        # training loop hyperparameters
-        self.num_trials = 5
-        self.total_train_episodes = 1000
-        self.buffer_episodes = 10  # num episodes in batch buffer
-        self.t_max = 500    # max episode length
-        self.opt_epochs = 10
-        self.mini_batch_size = 256
-        self.train_iterations = math.ceil(self.total_train_episodes / self.buffer_episodes) #top-lvl loop index
-        self.test_interval = 10  # test every 10 episodes
-        self.test_episodes = 10  # test 10 episodes and get average results
+        # --- Stability Settings ---
+        self.num_trials = 1
+        self.total_train_episodes = 5
+        self.buffer_episodes = 2  # Collect 2 episodes before updating
+        self.t_max = 100  # Max steps per episode
 
-        # training value hyperparameters
+        # Batch Size: 32 is safe because (2 episodes * ~20 steps) > 32
+        self.mini_batch_size = 32
+
+        self.opt_epochs = 4
+        self.test_interval = 2
+        self.test_episodes = 2
+
+        # --- Standard Model Params ---
+        self.train_iterations = math.ceil(self.total_train_episodes / self.buffer_episodes)
         self.actor_hidden_dim = 256
         self.critic_hidden_dim = 256
         self.actor_lr = 3e-4
         self.critic_lr = 1e-3
         self.gamma = 0.99
-        self.gae_lambda = 0.99
+        self.gae_lambda = 0.95
         self.entropy_coef = 0.01
         self.eps_clip = 0.2
 
+        # Env specific (Trainer uses these)
+        self.env_name = 'carla-cnn-v0'
+        self.image_height = 64
+        self.image_width = 64
+        self.dynamics_dim = 7
+        self.action_dim = 2
+        self.continuous_actions = True
 
 class ParametersA2C:
     def __init__(self):
