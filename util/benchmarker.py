@@ -2,15 +2,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as st
 import seaborn as sns
+import pandas as pd
 import sys
-#TODO: Fix confidence interval / benchmarking calculation
+
 
 class Utils:
     def __init__(self):
         pass
 
-    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, all_tests_info, test_episodes, moving_avg_window=100, down_sample_factor=100):
-        """Data processing and calculations"""
+    def benchmark_plot(self, all_train_returns, all_test_returns, test_interval, all_tests_info, test_episodes,
+                       moving_avg_window=100, down_sample_factor=100):
+        """Data processing and calculations with comprehensive metrics"""
         num_trials = len(all_train_returns)
         num_points = len(all_test_returns[0])
 
@@ -38,92 +40,225 @@ class Utils:
         margin_of_error = t_value * sample_std / np.sqrt(n)
         avg_max_return_ci = margin_of_error
 
-        # # Apply moving average to smooth the training returns
-        # smoothed_mean_train_returns = np.convolve(mean_train_returns, np.ones(moving_avg_window) / moving_avg_window, mode='valid')
-        # smoothed_train_ci = np.convolve(train_ci, np.ones(moving_avg_window) / moving_avg_window, mode='valid')
-        #
-        # # Down-sample the training returns for plotting
-        # down_sampled_indices = np.arange(0, len(smoothed_mean_train_returns), down_sample_factor)
-        # down_sampled_mean_train_returns = smoothed_mean_train_returns[down_sampled_indices]
-        # down_sampled_train_ci = smoothed_train_ci[down_sampled_indices]
-
         """Plot test rewards"""
         plt.figure(figsize=(12, 6))
         episodes = np.arange(0, num_points * test_interval, test_interval)
         for i in range(num_trials):
-            plt.plot(episodes, all_test_returns[i], linestyle='dotted', alpha=0.5, label=f'Trial {i+1}')  # Individual test trials
-        plt.plot(episodes, mean_test_returns, '-o', label='Mean Test Returns', color='black')  # Mean test returns without error bars
-        plt.fill_between(episodes, mean_test_returns - test_ci, mean_test_returns + test_ci, color='lightblue', alpha=0.3, label='CI')  # Fill between upper and lower bounds
+            plt.plot(episodes, all_test_returns[i], linestyle='dotted', alpha=0.5, label=f'Trial {i+1}')
+        plt.plot(episodes, mean_test_returns, '-o', label='Mean Test Returns', color='black')
+        plt.fill_between(episodes, mean_test_returns - test_ci, mean_test_returns + test_ci, 
+                         color='lightblue', alpha=0.3, label='95% CI')
         plt.xlabel('Episodes')
         plt.ylabel('Test Return')
         plt.title('Test Returns with 95% Confidence Interval')
         plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig('test_returns.png', dpi=300)
         plt.show()
 
-        """ Plot Information Table """
-        # Create per-trial summary data from LAST test checkpoint only
-        data = []
-        for trial_idx in range(num_trials):
-            # Get only the last test_episodes worth of info (final test checkpoint)
-            trial_tests = all_tests_info[trial_idx][-test_episodes:]
+        """ Extract and plot comprehensive metrics """
+        if all_tests_info is not None and len(all_tests_info) > 0:
+            # Extract metrics from all trials
+            # Structure: all_tests_info[trial][test_point] = aggregated_info dict
             
-            num_tests = len(trial_tests)
-            collisions = sum(1 for test in trial_tests if test.get('collision', False))
-            avg_speed_ms = np.mean([test.get('average_speed_m_s', 0) for test in trial_tests])
-            avg_distance = np.mean([test.get('distance_travelled_m', 0) for test in trial_tests])
+            all_distances = []
+            all_speeds = []
+            all_deviations = []
+            all_angles = []
+            all_collisions = []
+            all_success_rates = []
+            all_steering_changes = []
+            all_lateral_accels = []
+
+            for trial in all_tests_info:
+                trial_distances = [info['avg_distance'] for info in trial]
+                trial_speeds = [info['avg_speed'] for info in trial]
+                trial_deviations = [info['avg_deviation'] for info in trial]
+                trial_angles = [info['avg_angle'] for info in trial]
+                trial_collisions = [info['collision_rate'] for info in trial]
+                trial_success = [info['success_rate'] for info in trial]
+                trial_steering = [info['avg_steering_change'] for info in trial]
+                trial_lateral = [info['avg_lateral_accel'] for info in trial]
+
+                all_distances.append(trial_distances)
+                all_speeds.append(trial_speeds)
+                all_deviations.append(trial_deviations)
+                all_angles.append(trial_angles)
+                all_collisions.append(trial_collisions)
+                all_success_rates.append(trial_success)
+                all_steering_changes.append(trial_steering)
+                all_lateral_accels.append(trial_lateral)
+
+            # Convert to numpy arrays
+            all_distances = np.array(all_distances)
+            all_speeds = np.array(all_speeds)
+            all_deviations = np.array(all_deviations)
+            all_angles = np.array(all_angles)
+            all_collisions = np.array(all_collisions)
+            all_success_rates = np.array(all_success_rates)
+            all_steering_changes = np.array(all_steering_changes)
+            all_lateral_accels = np.array(all_lateral_accels)
+
+            # Calculate means and stds
+            mean_distances = all_distances.mean(axis=0)
+            mean_speeds = all_speeds.mean(axis=0)
+            mean_deviations = all_deviations.mean(axis=0)
+            mean_angles = all_angles.mean(axis=0)
+            mean_collisions = all_collisions.mean(axis=0)
+            mean_success = all_success_rates.mean(axis=0)
+            mean_steering = all_steering_changes.mean(axis=0)
+            mean_lateral = all_lateral_accels.mean(axis=0)
+
+            std_distances = all_distances.std(axis=0)
+            std_speeds = all_speeds.std(axis=0)
+            std_deviations = all_deviations.std(axis=0)
+            std_angles = all_angles.std(axis=0)
+            std_collisions = all_collisions.std(axis=0)
+            std_success = all_success_rates.std(axis=0)
+            std_steering = all_steering_changes.std(axis=0)
+            std_lateral = all_lateral_accels.std(axis=0)
+
+            # Create comprehensive summary table
+            table_episodes = episodes[::10]  # Every 100 episodes
             
-            data.append([
-                num_tests,
-                collisions,
-                f"{avg_speed_ms:.2f}",
-                f"{avg_distance:.1f}"
-            ])
+            summary_df = pd.DataFrame({
+                'Episode': table_episodes,
+                'Distance (m)': [f"{d:.2f}±{s:.2f}" for d, s in zip(mean_distances[::10], std_distances[::10])],
+                'Speed (m/s)': [f"{sp:.2f}±{st:.2f}" for sp, st in zip(mean_speeds[::10], std_speeds[::10])],
+                'Speed (km/h)': [f"{sp*3.6:.2f}±{st*3.6:.2f}" for sp, st in zip(mean_speeds[::10], std_speeds[::10])],
+                'Deviation (m)': [f"{d:.2f}±{s:.2f}" for d, s in zip(mean_deviations[::10], std_deviations[::10])],
+                'Angle (deg)': [f"{a:.2f}±{s:.2f}" for a, s in zip(mean_angles[::10], std_angles[::10])],
+                'Collision (%)': [f"{c:.2f}±{s:.2f}" for c, s in zip(mean_collisions[::10], std_collisions[::10])],
+                'Success (%)': [f"{sr:.2f}±{s:.2f}" for sr, s in zip(mean_success[::10], std_success[::10])],
+            })
 
-        columns = ['Tests', 'Collisions', 'Speed (m/s)', 'Distance (m)']
-        rows = [f'Trial {i+1}' for i in range(num_trials)]
+            # Print comprehensive table
+            print("\n" + "=" * 150)
+            print("COMPREHENSIVE METRICS ACROSS ALL TRIALS (Every 100 Episodes)")
+            print("=" * 150)
+            print(summary_df.to_string(index=False))
+            print("=" * 150)
 
-        fig, ax = plt.subplots(figsize=(10, max(3, num_trials * 0.5)))
-        ax.axis('tight')
-        ax.axis('off')
+            # Print final metrics summary (Paper Table VI style)
+            print("\n" + "=" * 100)
+            print(f"FINAL METRICS SUMMARY (Episode {int(episodes[-1])})")
+            print("=" * 100)
+            print(f"Distance Travelled:    {mean_distances[-1]:.2f} ± {std_distances[-1]:.2f} m")
+            print(f"Average Speed:         {mean_speeds[-1]:.2f} ± {std_speeds[-1]:.2f} m/s "
+                  f"({mean_speeds[-1]*3.6:.2f} ± {std_speeds[-1]*3.6:.2f} km/h)")
+            print(f"Average Deviation:     {mean_deviations[-1]:.2f} ± {std_deviations[-1]:.2f} m")
+            print(f"Average Angle Error:   {mean_angles[-1]:.2f} ± {std_angles[-1]:.2f} degrees")
+            print(f"Collision Rate:        {mean_collisions[-1]:.2f} ± {std_collisions[-1]:.2f} %")
+            print(f"Success Rate:          {mean_success[-1]:.2f} ± {std_success[-1]:.2f} %")
+            print(f"Steering Smoothness:   {mean_steering[-1]:.4f} ± {std_steering[-1]:.4f}")
+            print(f"Lateral Acceleration:  {mean_lateral[-1]:.2f} ± {std_lateral[-1]:.2f} m/s²")
+            print("=" * 100)
 
-        table = ax.table(cellText=data, colLabels=columns, rowLabels=rows,
-                         cellLoc='center', loc='center')
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 2)
+            # Print initial metrics
+            print("\n" + "=" * 100)
+            print(f"INITIAL METRICS SUMMARY (Episode {int(episodes[0])})")
+            print("=" * 100)
+            print(f"Distance Travelled:    {mean_distances[0]:.2f} ± {std_distances[0]:.2f} m")
+            print(f"Average Speed:         {mean_speeds[0]:.2f} ± {std_speeds[0]:.2f} m/s "
+                  f"({mean_speeds[0]*3.6:.2f} ± {std_speeds[0]*3.6:.2f} km/h)")
+            print(f"Average Deviation:     {mean_deviations[0]:.2f} ± {std_deviations[0]:.2f} m")
+            print(f"Average Angle Error:   {mean_angles[0]:.2f} ± {std_angles[0]:.2f} degrees")
+            print(f"Collision Rate:        {mean_collisions[0]:.2f} ± {std_collisions[0]:.2f} %")
+            print(f"Success Rate:          {mean_success[0]:.2f} ± {std_success[0]:.2f} %")
+            print("=" * 100)
 
-        plt.title('Final Test Performance (Last Checkpoint)', fontsize=12, pad=20)
-        plt.show()
+            # Print improvement metrics
+            print("\n" + "=" * 100)
+            print("IMPROVEMENT ANALYSIS")
+            print("=" * 100)
+            dist_change = mean_distances[-1] - mean_distances[0]
+            speed_change = mean_speeds[-1] - mean_speeds[0]
+            dev_change = mean_deviations[-1] - mean_deviations[0]
+            angle_change = mean_angles[-1] - mean_angles[0]
+            coll_change = mean_collisions[-1] - mean_collisions[0]
+            success_change = mean_success[-1] - mean_success[0]
+            
+            print(f"Distance:     {dist_change:+.2f} m ({dist_change/mean_distances[0]*100:+.1f}%)")
+            print(f"Speed:        {speed_change:+.2f} m/s ({speed_change/mean_speeds[0]*100:+.1f}%)")
+            print(f"Deviation:    {dev_change:+.2f} m ({dev_change/mean_deviations[0]*100:+.1f}%)")
+            print(f"Angle Error:  {angle_change:+.2f} deg ({angle_change/mean_angles[0]*100:+.1f}%)")
+            print(f"Collision:    {coll_change:+.2f}% ({coll_change/mean_collisions[0]*100:+.1f}%)")
+            print(f"Success:      {success_change:+.2f}% ({success_change/mean_success[0]*100:+.1f}%)")
+            print("=" * 100)
+
+            # Plot Paper Figure 8 style metrics
+            self._plot_training_progression(episodes, mean_speeds, std_speeds, 
+                                           mean_deviations, std_deviations,
+                                           mean_angles, std_angles,
+                                           mean_test_returns, test_ci)
 
         # Plot density plot of test returns
         plt.figure(figsize=(12, 6))
-        #sns.kdeplot(mean_test_returns, fill=True, label='Density Plot')
-        sns.kdeplot(mean_test_returns, label='Density Plot')
+        sns.kdeplot(mean_test_returns, label='Density Plot', fill=True)
         plt.xlabel('Test Return')
         plt.ylabel('Density')
         plt.title('Density Plot of Test Returns')
         plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig('density_plot.png', dpi=300)
         plt.show()
 
-        """Plot test rewards (Not in use)"""
-        # # Plot training returns with moving average and confidence interval
-        # plt.figure(figsize=(12, 6))
-        # plt.plot(down_sampled_indices, down_sampled_mean_train_returns, label='Mean Training Returns (Smoothed)', color='blue')
-        # plt.fill_between(down_sampled_indices, down_sampled_mean_train_returns - down_sampled_train_ci, down_sampled_mean_train_returns + down_sampled_train_ci, color='lightblue', alpha=0.3, label='CI')
-        # plt.xlabel('Episodes')
-        # plt.ylabel('Training Return')
-        # plt.title('Training Returns with 95% Confidence Interval (Smoothed)')
-        # plt.legend()
-        # plt.show()
-
-        # # Plot density plot of training returns
-        # plt.figure(figsize=(12, 6))
-        # #sns.kdeplot(mean_train_returns, fill=True, label='Density Plot')
-        # sns.kdeplot(mean_train_returns, label='Density Plot')
-        # plt.xlabel('Training Return')
-        # plt.ylabel('Density')
-        # plt.title('Density Plot of Training Returns')
-        # plt.legend()
-        # plt.show()
-
         return mean_test_returns, avg_max_return, avg_max_return_ci, individual_max_returns
+
+    def _plot_training_progression(self, episodes, mean_speeds, std_speeds,
+                                   mean_deviations, std_deviations,
+                                   mean_angles, std_angles,
+                                   mean_rewards, reward_ci):
+        """Plot training progression similar to Paper Figure 8"""
+        
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        
+        # Average Reward
+        ax = axes[0, 0]
+        ax.plot(episodes, mean_rewards, '-o', color='blue', label='Mean')
+        ax.fill_between(episodes, mean_rewards - reward_ci, mean_rewards + reward_ci,
+                       alpha=0.3, color='blue', label='95% CI')
+        ax.set_xlabel('Episodes')
+        ax.set_ylabel('Average Reward')
+        ax.set_title('Average Reward per Episode')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Average Speed
+        ax = axes[0, 1]
+        ax.plot(episodes, mean_speeds, '-o', color='green', label='Mean')
+        ax.fill_between(episodes, mean_speeds - std_speeds, mean_speeds + std_speeds,
+                       alpha=0.3, color='green', label='Std Dev')
+        ax.set_xlabel('Episodes')
+        ax.set_ylabel('Average Speed (m/s)')
+        ax.set_title('Average Speed per Episode')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Average Deviation
+        ax = axes[1, 0]
+        ax.plot(episodes, mean_deviations, '-o', color='orange', label='Mean')
+        ax.fill_between(episodes, mean_deviations - std_deviations, mean_deviations + std_deviations,
+                       alpha=0.3, color='orange', label='Std Dev')
+        ax.set_xlabel('Episodes')
+        ax.set_ylabel('Average Deviation (m)')
+        ax.set_title('Average Deviation per Episode')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Average Angle
+        ax = axes[1, 1]
+        ax.plot(episodes, mean_angles, '-o', color='red', label='Mean')
+        ax.fill_between(episodes, mean_angles - std_angles, mean_angles + std_angles,
+                       alpha=0.3, color='red', label='Std Dev')
+        ax.set_xlabel('Episodes')
+        ax.set_ylabel('Average Angle Error (deg)')
+        ax.set_title('Average Angle Error per Episode')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig('training_progression.png', dpi=300)
+        plt.show()
