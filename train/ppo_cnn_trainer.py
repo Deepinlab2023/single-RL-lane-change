@@ -1,5 +1,6 @@
 import sys
 from copy import deepcopy
+import gymnasium as gym
 import numpy as np
 import torch as th
 from torch.distributions import Normal
@@ -63,7 +64,7 @@ class PPOCNNtrainer:
                         value = critic(state)
 
                     # Take a step
-                    next_obs, reward, terminated, truncated, _ = env.step(action.cpu().numpy())
+                    next_obs, reward, terminated, truncated, info = env.step(action.cpu().numpy())
 
                     # Store transition
                     state_history.append(state)
@@ -109,7 +110,15 @@ class PPOCNNtrainer:
 
                 # Test at interval and print result
                 if n_ep % params.test_interval == 0:
-                    print(f'Episode {n_ep}: Training reward: {total_reward:.2f}')
+                    test_reward, test_info = self.test(deepcopy(actor), params)
+                    test_rewards.append(test_reward)
+                    tests_info.append(test_info)
+                    print(f'Episode {n_ep}: Training reward: {total_reward:.2f}, '
+                          f'Test reward: {test_reward:.2f}, '
+                          f'Test info: dist={test_info["avg_distance"]:.2f}m, '
+                          f'speed={test_info["avg_speed"]:.2f}m/s, '
+                          f'deviation={test_info["avg_deviation"]:.2f}m, '
+                          f'collision={test_info["collision_rate"]:.1f}%')
 
             # Process buffer once full
             batch_process = BatchProcessingCNN()
@@ -185,3 +194,65 @@ class PPOCNNtrainer:
 
         print("Training done")
         return episode_rewards, test_rewards, tests_info
+
+    @staticmethod
+    def test(actor, params):
+        """Test agent and collect comprehensive metrics"""
+        test_env = gym.make(params.env_name)
+        
+        # Collect info from all test episodes
+        all_episode_info = []
+        test_rewards = np.zeros(params.test_episodes)
+        
+        for i in range(params.test_episodes):
+            total_reward = 0
+            obs, _ = test_env.reset()
+            
+            for t in range(params.t_max):
+                state = pre_process_cnn(obs, params.device)
+                
+                with th.no_grad():
+                    output = actor(state)
+                    action, _, _ = actor.select_action(output)
+                
+                next_obs, reward, done, trunc, info = test_env.step(action.cpu().numpy())
+                
+                total_reward += reward
+                obs = next_obs
+                
+                if done or trunc:
+                    # Store the comprehensive info dict from this episode
+                    all_episode_info.append(info)
+                    break
+            
+            test_rewards[i] = total_reward
+        
+        test_env.close()
+        
+        # Aggregate metrics across all test episodes
+        aggregated_info = {
+            'avg_distance': np.mean([info.get('distance_travelled_m', 0) for info in all_episode_info]),
+            'std_distance': np.std([info.get('distance_travelled_m', 0) for info in all_episode_info]),
+            
+            'avg_speed': np.mean([info.get('avg_speed_m_s', 0) for info in all_episode_info]),
+            'std_speed': np.std([info.get('avg_speed_m_s', 0) for info in all_episode_info]),
+            
+            'avg_deviation': np.mean([info.get('avg_deviation_m', 0) for info in all_episode_info]),
+            'std_deviation': np.std([info.get('avg_deviation_m', 0) for info in all_episode_info]),
+            
+            'avg_angle': np.mean([info.get('avg_angle_deg', 0) for info in all_episode_info]),
+            'std_angle': np.std([info.get('avg_angle_deg', 0) for info in all_episode_info]),
+            
+            'collision_rate': sum(info.get('collision', False) for info in all_episode_info) / len(all_episode_info) * 100,
+            
+            'success_rate': sum(info.get('termination_reason', '') == 'ROUTE_COMPLETED' for info in all_episode_info) / len(all_episode_info) * 100,
+            
+            'avg_steering_change': np.mean([info.get('avg_steering_change', 0) for info in all_episode_info]),
+            'avg_lateral_accel': np.mean([info.get('avg_lateral_accel', 0) for info in all_episode_info]),
+            
+            # Store all individual episode info for detailed analysis
+            'all_episodes': all_episode_info
+        }
+        
+        average_reward = np.mean(test_rewards)
+        return average_reward, aggregated_info
