@@ -56,6 +56,20 @@ class CarlaCNNEnv(gym.Env):
             shape=(2,),
             dtype=np.float32)
 
+        # Episode metrics tracking
+        self.episode_num = 0
+        self.episode_rewards = []
+        self.episode_speeds = []
+        self.episode_deviations = []
+        self.episode_angles = []
+        self.episode_actions = []
+        self.episode_steering_changes = []
+        self.episode_lateral_accels = []
+        self.episode_distance = 0.0
+        self.episode_start_location = None
+        self.previous_location = None
+        self.previous_steer = 0.0
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
 
@@ -97,6 +111,20 @@ class CarlaCNNEnv(gym.Env):
         # Reset camera images
         self.camera_image_fv = None
         self.camera_image_bev = None
+
+        # Reset episode metrics
+        self.episode_num += 1
+        self.episode_rewards = []
+        self.episode_speeds = []
+        self.episode_deviations = []
+        self.episode_angles = []
+        self.episode_actions = []
+        self.episode_steering_changes = []
+        self.episode_lateral_accels = []
+        self.episode_distance = 0.0
+        self.episode_start_location = None
+        self.previous_location = None
+        self.previous_steer = 0.0
 
         # Set Synchronous Mode at Reset
         self.init_settings = self.world.get_settings()
@@ -174,7 +202,6 @@ class CarlaCNNEnv(gym.Env):
         # Reset previous state variables for reward calculation
         self.previous_x_position = None
         self.previous_y_position = None
-        self.previous_steer = 0.0
 
         # Wait for cameras to be ready
         self.world.tick()
@@ -192,11 +219,14 @@ class CarlaCNNEnv(gym.Env):
         self.return_action(action)
         self.world.tick()
 
-        # Get observation
+        # Get observation 
         observation = self.return_state()
 
         # Return Reward for Action
         reward = self.return_reward(action)
+
+        # Track metrics for this step 
+        self._update_episode_metrics(action, reward)
 
         # Check termination conditions
         terminated = len(self.collision_hist) > 0 or self.route_completed
@@ -204,9 +234,155 @@ class CarlaCNNEnv(gym.Env):
         # Check if episode should be truncated (max steps reached)
         truncated = self.current_step >= self.max_steps
 
-        info = {}
+        # Build info dict at episode end
+        if terminated or truncated:
+            info = self._build_info_dict()
+        else:
+            info = {}
 
         return observation, reward, terminated, truncated, info
+
+    def _update_episode_metrics(self, action, reward):
+        """Update per-step metrics tracking - reuses already calculated values"""
+        # Store reward
+        self.episode_rewards.append(reward)
+        
+        # Speed - already calculated in return_state() as self.foward_speed
+        self.episode_speeds.append(self.foward_speed)
+        
+        # Lateral deviation - already calculated in return_state() as self.x_sr and self.y_sr
+        lateral_deviation = np.sqrt(self.x_sr ** 2 + self.y_sr ** 2)
+        self.episode_deviations.append(lateral_deviation)
+        
+        # Heading error - already calculated in return_state() as self.theta_sr
+        self.episode_angles.append(abs(self.theta_sr))
+        
+        # Action tracking
+        action_array = action.squeeze() if isinstance(action, np.ndarray) else np.array(action)
+        self.episode_actions.append(action_array.copy())
+        
+        # Steering change
+        current_steer = float(action_array[0])
+        steer_change = abs(current_steer - self.previous_steer)
+        self.episode_steering_changes.append(steer_change)
+        self.previous_steer = current_steer
+        
+        # Lateral acceleration - only new CARLA call needed
+        acceleration = self.vehicle.get_acceleration()
+        lateral_accel = math.sqrt(acceleration.x**2 + acceleration.y**2)
+        self.episode_lateral_accels.append(lateral_accel)
+        
+        # Distance tracking - reuse location from return_state()
+        # Store location object in return_state() as self.current_location
+        if self.episode_start_location is None:
+            self.episode_start_location = self.current_location
+            self.previous_location = self.current_location
+        
+        if self.previous_location is not None:
+            step_distance = self.current_location.distance(self.previous_location)
+            self.episode_distance += step_distance
+        
+        self.previous_location = self.current_location
+
+    def _build_info_dict(self):
+        """Build comprehensive info dictionary for episode end"""
+        if len(self.episode_speeds) == 0:
+            return self._empty_info_dict()
+        
+        # Determine termination reason
+        if len(self.collision_hist) > 0:
+            termination_reason = "COLLISION"
+            collision = True
+        elif self.route_completed:
+            termination_reason = "ROUTE_COMPLETED"
+            collision = False
+        elif self.current_step >= self.max_steps:
+            termination_reason = "TIMEOUT"
+            collision = False
+        else:
+            termination_reason = "ONGOING"
+            collision = False
+        
+        return {
+            # Basic episode info
+            'episode': self.episode_num,
+            'total_steps': self.current_step,
+            'total_reward': sum(self.episode_rewards),
+            'avg_reward': np.mean(self.episode_rewards),
+            
+            # Termination
+            'collision': collision,
+            'termination_reason': termination_reason,
+            
+            # Speed metrics (m/s and km/h)
+            'avg_speed_m_s': np.mean(self.episode_speeds),
+            'avg_speed_km_h': np.mean(self.episode_speeds) * 3.6,
+            'max_speed_m_s': np.max(self.episode_speeds),
+            'min_speed_m_s': np.min(self.episode_speeds),
+            
+            # Deviation metrics (meters)
+            'avg_deviation_m': np.mean(self.episode_deviations),
+            'max_deviation_m': np.max(self.episode_deviations),
+            'std_deviation_m': np.std(self.episode_deviations),
+            
+            # Heading metrics (degrees)
+            'avg_angle_deg': np.mean(self.episode_angles),
+            'max_angle_deg': np.max(self.episode_angles),
+            'std_angle_deg': np.std(self.episode_angles),
+            
+            # Distance (meters)
+            'distance_travelled_m': self.episode_distance,
+            
+            # Comfort metrics
+            'avg_steering_change': np.mean(self.episode_steering_changes),
+            'max_steering_change': np.max(self.episode_steering_changes),
+            'avg_lateral_accel': np.mean(self.episode_lateral_accels),
+            'max_lateral_accel': np.max(self.episode_lateral_accels),
+            
+            # Control smoothness
+            'steering_smoothness': np.std([a[0] for a in self.episode_actions]),
+            'accel_smoothness': np.std([a[1] for a in self.episode_actions]),
+            
+            # Per-step arrays for detailed plotting
+            'step_rewards': np.array(self.episode_rewards),
+            'step_speeds': np.array(self.episode_speeds),
+            'step_deviations': np.array(self.episode_deviations),
+            'step_angles': np.array(self.episode_angles),
+            'step_actions': np.array(self.episode_actions),
+        }
+    
+    def _empty_info_dict(self):
+        """Return empty info if no steps taken"""
+        return {
+            'episode': self.episode_num,
+            'total_steps': 0,
+            'total_reward': 0.0,
+            'avg_reward': 0.0,
+            'collision': False,
+            'termination_reason': 'EMPTY_EPISODE',
+            'avg_speed_m_s': 0.0,
+            'avg_speed_km_h': 0.0,
+            'max_speed_m_s': 0.0,
+            'min_speed_m_s': 0.0,
+            'avg_deviation_m': 0.0,
+            'max_deviation_m': 0.0,
+            'std_deviation_m': 0.0,
+            'avg_angle_deg': 0.0,
+            'max_angle_deg': 0.0,
+            'std_angle_deg': 0.0,
+            'distance_travelled_m': 0.0,
+            'avg_steering_change': 0.0,
+            'max_steering_change': 0.0,
+            'avg_lateral_accel': 0.0,
+            'max_lateral_accel': 0.0,
+            'steering_smoothness': 0.0,
+            'accel_smoothness': 0.0,
+            'step_rewards': np.array([]),
+            'step_speeds': np.array([]),
+            'step_deviations': np.array([]),
+            'step_angles': np.array([]),
+            'step_actions': np.array([]),
+        }
 
     def render(self):
         pass
@@ -289,13 +465,15 @@ class CarlaCNNEnv(gym.Env):
 
     def return_state(self):
         """Return structured state with images and dynamics"""
-        # Get vehicle position
-        self.x_position = self.vehicle.get_location().x
-        self.y_position = self.vehicle.get_location().y
+        # Get vehicle location and store as Location object for distance tracking
+        self.current_location = self.vehicle.get_location()
+        self.x_position = self.current_location.x
+        self.y_position = self.current_location.y
 
         # Get velocity
-        self.x_velocity = self.vehicle.get_velocity().x
-        self.y_velocity = self.vehicle.get_velocity().y
+        velocity = self.vehicle.get_velocity()
+        self.x_velocity = velocity.x
+        self.y_velocity = velocity.y
         self.foward_speed = math.sqrt(self.x_velocity ** 2 + self.y_velocity ** 2)
 
         # Get heading
@@ -310,9 +488,8 @@ class CarlaCNNEnv(gym.Env):
         self.theta_sr = self.road_heading - self.vehicle_heading
 
         # Get lane information
-        vehicle_position = self.vehicle.get_location()
         map = self.world.get_map()
-        current_waypoint = map.get_waypoint(location=vehicle_position)
+        current_waypoint = map.get_waypoint(location=self.current_location)
         left_waypoint = current_waypoint.get_left_lane()
         right_waypoint = current_waypoint.get_right_lane()
 
@@ -458,7 +635,6 @@ class CarlaCNNEnv(gym.Env):
         # ==================== COMFORT REWARD ====================
         delta_a_steer = np.abs(a_steer - self.previous_steer)
         r_steering_change = -2.0 * delta_a_steer
-        self.previous_steer = a_steer
 
         a_y_vec = self.vehicle.get_acceleration()
         a_y_lateral = np.sqrt(a_y_vec.x ** 2 + a_y_vec.y ** 2)
