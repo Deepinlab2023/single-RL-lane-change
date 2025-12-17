@@ -8,39 +8,47 @@ from torch.distributions import Categorical, Normal
 class CNNFeatureExtractor(nn.Module):
     """CNN to extract features from images"""
 
-    def __init__(self, image_channels=3, image_height=64, image_width=64):
+    def __init__(self, image_channels=3, image_height=224, image_width=224):
         super(CNNFeatureExtractor, self).__init__()
 
-        # Convolutional layers for image processing
-        self.conv1 = nn.Conv2d(image_channels, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+        # Convolutional layers for image processing (matching table architecture)
+        self.conv1 = nn.Conv2d(image_channels, 16, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)  # FIXED: stride=1
+        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv3 = nn.Conv2d(32, 128, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv4 = nn.Conv2d(128, 64, kernel_size=3, stride=1, padding=1)
+        self.pool4 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv5 = nn.Conv2d(64, 32, kernel_size=3, stride=1, padding=1)
+        self.conv6 = nn.Conv2d(32, 8, kernel_size=3, stride=1, padding=1)
 
-        # Calculate output size after convolutions
-        def conv2d_size_out(size, kernel_size, stride):
-            return (size - kernel_size) // stride + 1
+        # Final flattened size: 14 × 14 × 8 = 1568
+        self.linear_input_size = 14 * 14 * 8
 
-        conv_h = conv2d_size_out(conv2d_size_out(conv2d_size_out(image_height, 8, 4), 4, 2), 3, 1)
-        conv_w = conv2d_size_out(conv2d_size_out(conv2d_size_out(image_width, 8, 4), 4, 2), 3, 1)
-
-        self.linear_input_size = conv_h * conv_w * 64
+        # Linear layer to reduce to 128 features
+        self.fc = nn.Linear(self.linear_input_size, 128)
 
     def forward(self, x):
         """
         Args:
             x: Image tensor of shape (batch, channels, height, width)
         Returns:
-            Flattened features
+            Features of shape (batch, 128)
         """
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
-        x = x.flatten(start_dim=1)
+        x = self.pool1(F.relu(self.conv1(x)))  # 224→224→112
+        x = self.pool2(F.relu(self.conv2(x)))  # 112→112→56
+        x = self.pool3(F.relu(self.conv3(x)))  # 56→56→28
+        x = self.pool4(F.relu(self.conv4(x)))  # 28→28→14
+        x = F.relu(self.conv5(x))  # 14→14
+        x = F.relu(self.conv6(x))  # 14→14
+        x = x.flatten(start_dim=1)  # Flatten to 1568
+        x = F.relu(self.fc(x))  # Linear to 128
         return x
 
 
 class PPOActorCNN(nn.Module):
-    def __init__(self, image_height=64, image_width=64, dynamics_dim=7,
+    def __init__(self, image_height=224, image_width=224, dynamics_dim=7,
                  hidden_dim=256, action_dim=2, continuous=True):
         super(PPOActorCNN, self).__init__()
         self.continuous = continuous
@@ -52,24 +60,23 @@ class PPOActorCNN(nn.Module):
         self.cnn_bev = CNNFeatureExtractor(3, image_height, image_width)
         self.cnn_fv = CNNFeatureExtractor(3, image_height, image_width)
 
-        # Feature dimension reduction (matching table architecture)
-        # Reduce CNN outputs to 128 each before fusion
-        self.pool_bev = nn.Linear(self.cnn_bev.linear_input_size, 128)
-        self.pool_fv = nn.Linear(self.cnn_fv.linear_input_size, 128)
+        # Dynamics feature dimension reduction to 128
         self.pool_dynamics = nn.Linear(dynamics_dim, 128)
 
-        # Calculate combined feature size after pooling
-        combined_size = 128 + 128 + 128  # BEV + FV + Dynamics = 384
+        # Calculate combined feature size: BEV (128) + FV (128) + Dynamics (128) = 384
+        # This matches the fusion table: 1 × (128 × n) where n=3
+        combined_size = 128 * 3  # 384
 
-        # Fully connected layers
-        self.fc1 = nn.Linear(combined_size, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        # Fusion layers (matching table architecture)
+        self.fc1 = nn.Linear(combined_size, 128)  # 384 → 128
+        self.fc2 = nn.Linear(128, 64)  # 128 → 64
+        self.fc3 = nn.Linear(64, 7)  # 64 → 7
 
         if continuous:
-            self.fc_mean = nn.Linear(hidden_dim, action_dim)
-            self.fc_log_std = nn.Linear(hidden_dim, action_dim)
+            self.fc_mean = nn.Linear(7, action_dim)
+            self.fc_log_std = nn.Linear(7, action_dim)
         else:
-            self.fc3 = nn.Linear(hidden_dim, action_dim)
+            self.fc_action = nn.Linear(7, action_dim)
 
         self.initialize_weights()
 
@@ -90,21 +97,18 @@ class PPOActorCNN(nn.Module):
                 - fv: (batch, 3, H, W)
                 - dynamics: (batch, dynamics_dim)
         """
-        # Extract features from images
-        bev_features = self.cnn_bev(state['bev'])
-        fv_features = self.cnn_fv(state['fv'])
-
-        # Reduce dimensions (matching table architecture)
-        bev_pooled = F.relu(self.pool_bev(bev_features))
-        fv_pooled = F.relu(self.pool_fv(fv_features))
-        dynamics_pooled = F.relu(self.pool_dynamics(state['dynamics']))
+        # Extract features from images (each outputs 128 features)
+        bev_features = self.cnn_bev(state['bev'])  # → 128
+        fv_features = self.cnn_fv(state['fv'])  # → 128
+        dynamics_features = F.relu(self.pool_dynamics(state['dynamics']))  # → 128
 
         # Concatenate all features (now 384 total)
-        combined = th.cat([bev_pooled, fv_pooled, dynamics_pooled], dim=1)
+        combined = th.cat([bev_features, fv_features, dynamics_features], dim=1)
 
-        # Process through FC layers
-        x = F.relu(self.fc1(combined))
-        x = F.relu(self.fc2(x))
+        # Fusion layers (matching table architecture)
+        x = F.relu(self.fc1(combined))  # 384 → 128
+        x = F.relu(self.fc2(x))  # 128 → 64
+        x = F.relu(self.fc3(x))  # 64 → 7
 
         if self.continuous:
             mean = self.fc_mean(x)
@@ -112,7 +116,7 @@ class PPOActorCNN(nn.Module):
             log_std = th.clamp(log_std, -20, 2)
             return th.cat([mean, log_std], dim=-1)
         else:
-            logits = self.fc3(x)
+            logits = self.fc_action(x)
             return logits
 
     def select_action(self, output):
@@ -138,7 +142,7 @@ class PPOActorCNN(nn.Module):
 
 
 class PPOCriticCNN(nn.Module):
-    def __init__(self, image_height=64, image_width=64, dynamics_dim=7, hidden_dim=256):
+    def __init__(self, image_height=224, image_width=224, dynamics_dim=7, hidden_dim=256):
         super(PPOCriticCNN, self).__init__()
         self.image_height = image_height
         self.image_width = image_width
@@ -147,18 +151,17 @@ class PPOCriticCNN(nn.Module):
         self.cnn_bev = CNNFeatureExtractor(3, image_height, image_width)
         self.cnn_fv = CNNFeatureExtractor(3, image_height, image_width)
 
-        # Feature dimension reduction (matching table architecture)
-        self.pool_bev = nn.Linear(self.cnn_bev.linear_input_size, 128)
-        self.pool_fv = nn.Linear(self.cnn_fv.linear_input_size, 128)
+        # Dynamics feature dimension reduction to 128
         self.pool_dynamics = nn.Linear(dynamics_dim, 128)
 
-        # Calculate combined feature size after pooling
-        combined_size = 128 + 128 + 128  # BEV + FV + Dynamics = 384
+        # Calculate combined feature size: BEV (128) + FV (128) + Dynamics (128) = 384
+        combined_size = 128 * 3  # 384
 
-        # Fully connected layers
-        self.fc1 = nn.Linear(combined_size, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, 1)
+        # Fusion layers (matching table architecture)
+        self.fc1 = nn.Linear(combined_size, 128)  # 384 → 128
+        self.fc2 = nn.Linear(128, 64)  # 128 → 64
+        self.fc3 = nn.Linear(64, 7)  # 64 → 7
+        self.fc_value = nn.Linear(7, 1)  # 7 → 1 (value output)
 
         self.initialize_weights()
 
@@ -176,22 +179,19 @@ class PPOCriticCNN(nn.Module):
         Args:
             state: Dictionary with keys 'bev', 'fv', 'dynamics'
         """
-        # Extract features from images
-        bev_features = self.cnn_bev(state['bev'])
-        fv_features = self.cnn_fv(state['fv'])
-
-        # Reduce dimensions (matching table architecture)
-        bev_pooled = F.relu(self.pool_bev(bev_features))
-        fv_pooled = F.relu(self.pool_fv(fv_features))
-        dynamics_pooled = F.relu(self.pool_dynamics(state['dynamics']))
+        # Extract features from images (each outputs 128 features)
+        bev_features = self.cnn_bev(state['bev'])  # → 128
+        fv_features = self.cnn_fv(state['fv'])  # → 128
+        dynamics_features = F.relu(self.pool_dynamics(state['dynamics']))  # → 128
 
         # Concatenate all features (now 384 total)
-        combined = th.cat([bev_pooled, fv_pooled, dynamics_pooled], dim=1)
+        combined = th.cat([bev_features, fv_features, dynamics_features], dim=1)
 
-        # Process through FC layers
-        x = F.relu(self.fc1(combined))
-        x = F.relu(self.fc2(x))
-        value = self.fc3(x)
+        # Fusion layers (matching table architecture)
+        x = F.relu(self.fc1(combined))  # 384 → 128
+        x = F.relu(self.fc2(x))  # 128 → 64
+        x = F.relu(self.fc3(x))  # 64 → 7
+        value = self.fc_value(x)  # 7 → 1
         return value
 
     def critic_loss(self, values, old_values, returns, eps_clip):

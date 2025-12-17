@@ -20,6 +20,8 @@ def main():
                         help='Choose: "cartpole", "pong", "sumo", or "carla".')
     parser.add_argument('--algo', type=str, required=True,
                         help='Choose: "dqn", "ppo", or "a2c".')
+    parser.add_argument('--town', type=str, default='Town04',
+                        help='CARLA town to use: "Town01", "Town02", "Town03", "Town04", "Town05", etc. (default: Town04)')
     parser.add_argument('--render-freq', type=int, default=1,
                         help='Render every N steps (default: 1 = every step)')
     args = parser.parse_args()
@@ -60,12 +62,15 @@ def main():
                 kwargs={
                     'host': 'localhost',
                     'port': 2000,
-                    'num_surrounding_vehicles': 30
+                    'num_surrounding_vehicles': 30,
+                    'max_steps': 1000,
+                    'town': args.town  # Pass town parameter from command line
                 }
             )
 
         # Now create the env using gym.make so it's consistent with the trainer's logic
         env = gym.make(env_name)
+        print(f"CARLA Environment created with {args.town}")
 
     else:
         raise ValueError(f"Unknown environment: {args.env}")
@@ -94,9 +99,9 @@ def main():
 
     # Handle different observation space types
     if args.env.lower() == 'carla':
-        # CARLA with CNN - set image dimensions
-        params.image_height = 64
-        params.image_width = 64
+        # CARLA with CNN - set image dimensions (updated to match table)
+        params.image_height = 224
+        params.image_width = 224
         params.dynamics_dim = 7
         params.action_dim = 2
         params.continuous_actions = True
