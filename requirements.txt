@@ -1,7 +1,13 @@
 gymnasium[classic-control]
-matplotlib==3.10.0
+matplotlib
 numpy==2.2.2
 scipy==1.15.1
 seaborn==0.13.2
 torch==2.5.1
-
+sumolib
+traci
+pygame
+carla==0.9.15
+pandas
+opencv-python
+Pillow
